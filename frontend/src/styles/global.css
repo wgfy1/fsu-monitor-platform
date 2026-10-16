@@ -1,0 +1,809 @@
+/* ============================================================
+ * 平台全局样式规范
+ * 目标：统一后台页面的布局、间距、标题层级、表格与状态展示。
+ * 原则：只做排版与视觉统一，不引入新字体、渐变、动画。
+ * ============================================================ */
+
+:root {
+  /* 字体体系：全站**唯一**来源，与 index.tsx 的 ConfigProvider token 同源引用。
+   * --font-sans：正文系统字体栈，取值与 antd 默认 fontFamily 完全一致（不引入新字体）。
+   * --font-mono：等宽字体栈，Windows 落到 Consolas（与原有 .cell-mono 取值一致）。
+   * 两者都只引用系统已装字体，未使用任何商业字体。 */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+    'Noto Color Emoji';
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 间距节奏（8 的倍数） */
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 16px;
+  --gap-lg: 24px;
+
+  /* 文字层级 */
+  --text-title: rgba(0, 0, 0, 0.88);
+  --text-body: rgba(0, 0, 0, 0.65);
+  --text-muted: rgba(0, 0, 0, 0.45);
+  --text-disabled: rgba(0, 0, 0, 0.25);
+
+  /* 状态语义色（只表达状态，不做装饰） */
+  --state-online-bg: #e6ffed;
+  --state-online-fg: #389e0d;
+  --state-alarm-bg: #fff7e6;
+  --state-alarm-fg: #d46b08;
+  --state-error-bg: #fff1f0;
+  --state-error-fg: #cf1322;
+  --state-idle-bg: #f5f5f5;
+  --state-idle-fg: #8c8c8c;
+  --state-info-bg: #e6f4ff;
+  --state-info-fg: #0958d9;
+
+  /* 左侧导航配色（深蓝绿）：与 App.tsx 里 ConfigProvider 的 Menu token 同源，
+   * 改色时两处一起改；这里供 CSS 侧的图标/平台名称使用。 */
+  --sider-bg: #0B3D50;
+  --sider-title-fg: #FFFFFF;
+  --sider-text: #E6F0F4;
+  --sider-icon: #C8D6DE;
+  --sider-hover-bg: #14516A;
+  --sider-selected-bg: #174E6B;
+  --sider-selected-fg: #FFFFFF;
+}
+
+/* 正文基础字体与字号，避免各页面各自设定。
+ * font-family 必须显式声明在 html 上：此前只有 antd reset.css 的
+ * `html { font-family: sans-serif }`（通用关键字），跨平台/跨语言解析结果不确定，
+ * 而 antd 组件自身用的是 token.fontFamily 系统字体栈，两套字体并存即"字体不统一"。
+ * 声明在 html 上可同时覆盖 body 与被注入到 body 之外的自定义弹层（如地图 InfoWindow）。 */
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  font-size: 14px;
+  color: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 高度链的起点：根节点占满视口，浏览器不再被页面内容无限撑长 */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* ---------- 页面容器：统一顶部工具栏与内容间距 ---------- */
+.page-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+  /* 内容区最大宽度，超宽屏不拉伸变形 */
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+  /* 高度链的一环：撑满 Content 的可用高度（见文件末尾"主内容工作区"说明） */
+  flex: 1 1 auto;
+}
+
+/* ---------- 一行式工具栏：标题 — 搜索/筛选 — 操作按钮 ----------
+ * 位于**白色卡片内部顶端**（列表页与表格、分页同处一张卡片），
+ * 三者同一行：标题在最左，筛选控件居中，操作按钮贴最右。
+ * align-items: center 让标题与搜索框垂直居中对齐。 */
+.page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm) var(--gap-md);
+  flex-wrap: wrap;
+  /* 高度链的一环：只占必要高度，剩余高度全部让给下方表格区 */
+  flex-shrink: 0;
+}
+
+/* 卡片内：工具栏与表格之间留出间距（卡片自带的 20px 内边距即"顶部内边距"）。
+ * 用直接子选择器限定在列表页那张卡片内 —— card={false} 的页面里
+ * 工具栏是独立卡片，卡片自身的下内边距已经足够，不需要再加。 */
+.page-container .page-container__main > .ant-card-body > .page-toolbar {
+  margin-bottom: var(--gap-md);
+}
+
+/* 标题块：不参与伸缩，永远留在首行最左 */
+.page-toolbar__heading {
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.page-toolbar__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  color: var(--text-title);
+  white-space: nowrap;
+}
+
+.page-toolbar__desc {
+  margin-top: var(--gap-xs);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-muted);
+}
+
+/* 中间筛选/搜索区：吃掉标题与操作区之间的剩余宽度。
+ * flex-basis 必须是 0 而不是 auto：flex 的换行判定只看 flex-basis，
+ * 若用 auto（= 所有控件的总宽），像"告警中心"这样的宽筛选条会被整块折到
+ * 第二行，操作按钮再被挤到第三行，工具栏就散了。
+ * 取 0 时它始终与标题同行、按剩余宽度伸展，控件在区域内部换行，
+ * 因此既保持单行优先，也不会产生横向溢出。 */
+.page-toolbar__filters {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm) var(--gap-md);
+  flex-wrap: wrap;
+  flex: 1 1 0;
+}
+
+/* 右侧操作区：始终可见、不因窗口变窄被挤没；margin-left: auto 保证贴最右 */
+.page-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.page-toolbar__hint {
+  font-size: 12px;
+  color: var(--text-disabled);
+}
+
+/* ---------- 表格统一 ---------- */
+.page-container .ant-table-thead > tr > th,
+.page-container .ant-table-thead > tr > td {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-body);
+  background: #fafafa;
+  padding: 12px 12px !important;
+  white-space: nowrap;
+}
+
+/* 注意：排除 antd 的「测量行」。
+ * 表格启用横向滚动（scroll={{ x }})时，antd 会在 tbody 最前面插入一行隐藏的
+ * tr.ant-table-measure-row（0 高度，仅用于测量各列宽度）。
+ * 下面两条规则原本对 tbody 里所有 tr 生效，会把测量行也撑成 52px，
+ * 于是在【表头与第一行数据之间】留下一块 52px 的空白 —— 这正是列表页
+ * "表头下面大块空白"的根因（无横向滚动的表格不插入测量行，所以没有该现象）。
+ */
+.page-container .ant-table-tbody > tr:not(.ant-table-measure-row) > td {
+  padding: 12px 12px !important;
+  vertical-align: middle;
+}
+
+.page-container .ant-table-tbody > tr:not(.ant-table-measure-row) {
+  height: 52px;
+}
+
+/* 测量行必须保持 0 高度（双保险，避免其它规则再次把它撑开） */
+.page-container .ant-table-tbody > tr.ant-table-measure-row,
+.page-container .ant-table-tbody > tr.ant-table-measure-row > td {
+  height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+}
+
+/* 表格里的次要文字（设备ID、时间等）：全站统一 13px 等宽。
+ * 完全以「站点管理 → 设备ID」列为准：只声明 font-family + font-size，
+ * 不声明 font-weight / line-height / letter-spacing / color，全部交由上下文继承，
+ * 保证与站点管理页同一字段的渲染结果（含颜色）完全一致。 */
+.cell-mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.cell-muted {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.cell-time {
+  font-size: 13px;
+  color: var(--text-body);
+  white-space: nowrap;
+}
+
+/* 操作列：链接按钮不换行，间距紧凑 */
+.cell-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.cell-actions .ant-btn-link {
+  padding-inline: 4px;
+}
+
+/* ---------- 状态标签统一 ---------- */
+.status-tag {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.status-tag--online {
+  background: var(--state-online-bg);
+  color: var(--state-online-fg);
+}
+
+.status-tag--alarm {
+  background: var(--state-alarm-bg);
+  color: var(--state-alarm-fg);
+}
+
+.status-tag--error {
+  background: var(--state-error-bg);
+  color: var(--state-error-fg);
+}
+
+.status-tag--idle {
+  background: var(--state-idle-bg);
+  color: var(--state-idle-fg);
+}
+
+.status-tag--info {
+  background: var(--state-info-bg);
+  color: var(--state-info-fg);
+}
+
+/* ---------- 展开行（站点管理 → 设备列表）---------- */
+.expand-panel {
+  background: #fafafa;
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.expand-panel__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-sm);
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.expand-panel__title {
+  font-size: 14px;
+  color: var(--text-title);
+}
+
+/* 展开区内的二级表格：与主表拉开层次，避免"表格套表格" */
+.expand-panel .ant-table {
+  background: #fff;
+  border-radius: 4px;
+}
+
+.expand-panel .ant-table-thead > tr > th {
+  background: #f5f5f5 !important;
+}
+
+/* ---------- 主内容白色工作区：表格区内部滚动，分页钉在表格区底部 ----------
+ * 高度链（自上而下，每层都是 flex 项，靠 flex-grow 分配剩余高度）：
+ *   .ant-layout-content   ← 已是布局列，改为 flex 列容器
+ *     .page-container     ← flex: 1，撑满内容视口
+ *       .page-container__main（白色卡片）← flex: 1
+ *         .ant-card-body  ← flex: 1，卡片内边距层（工具栏 + 表格区）
+ *           .page-toolbar ← flex-shrink: 0，固定高度（标题 + 筛选 + 操作，一行）
+ *           表格包装层……  ← 逐层传递高度（详见下方"高度链逐层传递"）
+ *           .ant-table-content    ← 数据在这里内部滚动，表头吸顶
+ *           .ant-table-pagination ← 不参与滚动，始终停在表格区底部
+ *
+ * 效果：数据少时白色卡片延伸到视口底部，不再出现大片灰色空白；
+ *       数据多时表格区内部滚动，分页位置不再随数据量向下沉。
+ * 未使用任何 padding / 空数据行 / 占位元素制造高度。
+ *
+ * 只作用于 PageContainer 自己渲染的 .page-container__main，
+ * card={false} 的页面（首页/设备详情/告警推送）内部嵌套的卡片不受影响。 */
+/* Content 是「长页面」的整页级滚动容器：
+ * 高度被外层 100vh 框架锁定，内容超出时在本区域内滚动（Header / Sidebar 不动）。 */
+.ant-layout-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* 列表型页面（PageContainer fill）：容器只占内容视口高度，
+ * 工具栏（标题 + 筛选 + 操作）固定，数据区（表格）自己内部滚动。
+ * 筛选控件现在与标题同处 .page-toolbar，该行的 flex-shrink: 0 已在上面声明。 */
+.page-container--fill {
+  height: 100%;
+  min-height: 0;
+}
+
+.page-container--fill .page-container__main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---------- 高度链逐层传递（设备列表分页被顶出视口的根因） ----------
+ * antd 表格的 DOM 是固定结构，白色卡片体与滚动区之间还夹着 Spin 的两层包装
+ * （.ant-spin-nested-loading / .ant-spin-container）和 rc-table 的两层包装
+ * （.ant-table / .ant-table-container）：
+ *   .ant-card-body > .ant-table-wrapper > .ant-spin-nested-loading
+ *     > .ant-spin-container > .ant-table > .ant-table-container > .ant-table-content
+ * flex 高度只在「父 flex 容器 → 子 flex 项」之间传递，中间任何一层没写成
+ * flex 列并允许压缩（min-height: 0），高度链就会在那层断掉：表格于是按内容
+ * 自然增高，撑破卡片后被卡片的 overflow: hidden 裁掉，而分页在内容最底部，
+ * 就被顶出了视口（设备越多、行越高，沉得越深）。
+ *
+ * 此前这段正是坏的：旧选择器写成 `.page-container__main > .ant-table-wrapper`，
+ * 漏掉了中间的 .ant-card-body，因此从未命中 —— 本段规则（含表头 sticky）全部失效。
+ *
+ * 全部用直接子选择器（>）逐层锁定：只作用于本卡片内的主表格，
+ * 不会误伤「站点管理」展开行里的二级表格。
+ * 另外这条链上不能出现 overflow：除滚动区以外的任何一层一旦成为滚动容器，
+ * 表头 sticky 的参照物就会变成它（而它本身不滚动），表头便不再吸顶。 */
+
+/* 卡片体：筛选区固定高度，表格区占满其余高度 */
+.page-container--fill .page-container__main > .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 表格包装层 → 列容器：逐层 flex 传递高度（缺任何一层，高度链就会断在那里） */
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper,
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper > .ant-spin-nested-loading,
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container,
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table,
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table
+  > .ant-table-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 数据区（表头 + 数据行）：占满剩余高度，超出部分在本区域内滚动 */
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table
+  > .ant-table-container > .ant-table-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 覆盖 rc-table 给开启横向滚动的表格打的内联 overflow-y: hidden：
+     这里必须是**真正**的纵向滚动容器，表头的 sticky 才有生效的参照物。 */
+  overflow-y: auto !important;
+}
+
+/* 表头在数据区内部滚动时保持可见（参照物即上面的 .ant-table-content 滚动区） */
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table
+  > .ant-table-container > .ant-table-content > table > .ant-table-thead > tr > th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* 分页：不参与滚动、也不随表格压缩，始终停在表格区底部（设备再多也不会被顶走） */
+.page-container--fill .page-container__main > .ant-card-body
+  > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container
+  > .ant-table-pagination {
+  flex-shrink: 0;
+}
+
+.page-container__main {
+  flex: 1 1 auto;
+}
+
+/* ---------- 工具栏独立卡（card={false} 的页面：首页 / 设备详情 / 告警推送）----------
+ * 这类页面自己渲染卡片，工具栏无法并入其中，因此单独给一张同款白卡，
+ * 保证灰色背景上同样不出现裸露的页面标题与操作栏。
+ * 纵向内边距比内容卡（20px）略小，避免顶部白条过高。 */
+.page-container__toolbar {
+  flex-shrink: 0;
+}
+
+.page-container .page-container__toolbar > .ant-card-body {
+  padding: 12px 20px;
+}
+
+/* ---------- 侧栏：平台名称固定 + 菜单区内部滚动 ----------
+ * 侧栏从页面最顶端延伸到底部（外层横向 Layout 的一个 flex 项），
+ * 与右侧白色 Header 同高（64px），顶边对齐。
+ * 菜单项变多时在侧栏内部滚动，不会被 100vh 的应用框架裁掉。 */
+.ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* 平台名称：侧栏最顶部、左对齐，白色加粗 */
+.app-sider__logo {
+  height: 64px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  color: var(--sider-title-fg);
+  /* 分隔线用极低透明度的白色，深色底上不刺眼 */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.app-sider__menu {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 菜单与平台名称之间留一点呼吸空间 */
+  padding-top: 8px;
+}
+
+/* ---------- 卡片统一 ---------- */
+.page-container .ant-card {
+  border-radius: 8px;
+}
+
+.page-container .ant-card-head {
+  min-height: 48px;
+  padding-inline: 20px;
+}
+
+.page-container .ant-card-head-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-title);
+}
+
+.page-container .ant-card-body {
+  padding: 20px;
+}
+
+/* ---------- 空状态 / 加载 ---------- */
+.page-container .ant-empty {
+  margin-block: 32px;
+}
+
+.page-container .ant-empty-description {
+  color: var(--text-muted);
+}
+
+/* ---------- 窄屏适配（1366 / 1440 等）---------- */
+@media (max-width: 1440px) {
+  .page-container .ant-card-body {
+    padding: 16px;
+  }
+  /* 工具栏独立卡：横向内边距跟随内容卡一起收窄 */
+  .page-container .page-container__toolbar > .ant-card-body {
+    padding: 12px 16px;
+  }
+}
+
+@media (max-width: 1280px) {
+  .page-toolbar__title {
+    font-size: 18px;
+  }
+  .page-container .ant-table-tbody > tr > td,
+  .page-container .ant-table-thead > tr > th {
+    padding: 10px 8px !important;
+  }
+}
+
+/* 窄屏兜底：再挤下去中间筛选区会被压到小于最宽控件（告警中心的时间范围选择器
+ * 固定 360px），可能横向溢出。此时把筛选区整块折到第二行独占宽度；
+ * 用 order 让操作按钮仍留在首行右侧（flex 换行按 order 顺序判定，
+ * 若只给筛选区 flex-basis: 100%，操作按钮会被顺延到第三行）。 */
+@media (max-width: 960px) {
+  .page-toolbar__filters {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .page-toolbar__actions {
+    order: 0;
+  }
+}
+
+
+/* ---------- 左侧导航：深蓝绿侧栏（宜科 IoT 风格）----------
+ * 配色（全部集中在 :root 变量里，改色只改这一处）：
+ *   侧栏背景 #0B3D50 / 平台名称 #FFFFFF
+ *   普通菜单文字 #E6F0F4 / 图标 #C8D6DE
+ *   选中背景 #174E6B / 文字与图标 #FFFFFF
+ *   悬停背景 #14516A
+ * 背景、文字、选中/悬停背景由 App.tsx 的 ConfigProvider Menu token 给出；
+ * 这里只补 token 覆盖不到的部分：图标颜色、去掉旧的浅色选中态残留、
+ * 以及菜单根节点的背景（与侧栏同色，不出现色块分界）。
+ * 选择器全部以 .app-sider 作用域限定，不影响页面内其它 Menu。 */
+/* 侧栏底色。选择器写成两个类（.ant-layout-sider.app-sider）是为了稳定压过
+ * antd 给 Sider 的默认深色底 #001529 —— 同特异度时 antd 的运行时样式
+ * 注入在构建 CSS 之后，会赢。 */
+.ant-layout-sider.app-sider {
+  background: var(--sider-bg);
+}
+
+.app-sider .ant-menu {
+  background: transparent;
+}
+
+/* antd 深色 inline 菜单给选中项画了右侧竖条与展开箭头，这里去掉，只保留背景色块 */
+.app-sider .ant-menu-inline .ant-menu-item::after {
+  display: none !important;
+}
+
+/* 菜单项圆角与内缩（与 token 一致，避免 antd 默认贴边） */
+.app-sider .ant-menu-inline .ant-menu-item {
+  width: calc(100% - 16px);
+  border-radius: 6px;
+}
+
+/* 图标颜色独立于文字（#C8D6DE ≠ #E6F0F4），token 管不到，用 CSS 指定。
+ *
+ * 选择器必须写到 .ant-menu 这一层（4 个类），不能只写 .app-sider .ant-menu-item .anticon：
+ * antd 有一条 `:where(...).ant-menu .ant-menu-item .ant-menu-item-icon { color: inherit }`
+ * （:where() 不计特异度，所以它实际是 3 个类），而图标元素同时带着 .anticon 与
+ * .ant-menu-item-icon 两个类，两条规则同特异度、antd 的运行时样式注入在后 → antd 赢。
+ * 多带一层 .ant-menu 即可稳定胜过它；同时两个类名都写上，语义更明确。 */
+.app-sider .ant-menu .ant-menu-item .anticon,
+.app-sider .ant-menu .ant-menu-item .ant-menu-item-icon {
+  color: var(--sider-icon);
+}
+
+.app-sider .ant-menu .ant-menu-item:hover .anticon,
+.app-sider .ant-menu .ant-menu-item:hover .ant-menu-item-icon,
+.app-sider .ant-menu .ant-menu-item-selected .anticon,
+.app-sider .ant-menu .ant-menu-item-selected .ant-menu-item-icon {
+  color: var(--sider-selected-fg);
+}
+
+.app-sider .ant-menu-item-selected {
+  font-weight: 500;
+}
+
+/* ---------- 首页：紧凑统计行 ---------- */
+.stat-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 0;
+  border-bottom: 1px solid #f5f5f5;
+  font-size: 13px;
+}
+
+.stat-row:last-child {
+  border-bottom: none;
+}
+
+.stat-row__label {
+  color: var(--text-muted);
+}
+
+.stat-row__value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-title);
+  line-height: 1;
+}
+
+.stat-row__value--online { color: var(--state-online-fg); }
+.stat-row__value--alarm  { color: var(--state-alarm-fg); }
+.stat-row__value--error  { color: var(--state-error-fg); }
+.stat-row__value--idle   { color: var(--state-idle-fg); }
+
+/* ---------- 站点分布图 ---------- */
+.site-map {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  background: #fafbfc;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.site-map__marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+/* ---------- 告警推送页：配置区紧凑排版 ---------- *
+ * 字段纵向间距收紧（antd 垂直表单默认 24px → 12px）。
+ * 输入框限宽在组件内以 Form 的 maxWidth 控制，不在这里改。
+ */
+.alarm-notify-page .ant-form-item {
+  margin-bottom: 12px !important;
+}
+
+/* ---------- 首页 · 平台总览：纵向比例压缩（首屏尽量完整显示） ----------
+ * 只调首页自身的密度，不改宽度比例、配色与其它页面：
+ *   1) 卡片头 48px → 36px（仅首页的地图卡与三张统计卡）
+ *   2) 统计行内边距 9px → 5px，使右侧 3 张卡片能等分地图卡片高度
+ * 选择器前置 .page-container 以保证覆盖上方同名的 .page-container 规则。
+ */
+.page-container .dashboard-map-card .ant-card-head,
+.page-container .dashboard-stat-card .ant-card-head {
+  min-height: 36px;
+  padding-inline: 16px;
+}
+
+.page-container .dashboard-map-card .ant-card-head-title,
+.page-container .dashboard-stat-card .ant-card-head-title {
+  font-size: 14px;
+  padding: 6px 0;
+}
+
+.dashboard-stat-card .stat-row {
+  padding: 5px 0;
+}
+
+/* ---------- 告警推送页：紧凑配置区 + 记录区内部滚动 ----------
+ * 页面结构（.alarm-notify-page 占满内容视口）：
+ *   ├─ 推送配置卡  flex-shrink: 0 —— 只占必要高度，配置越紧凑记录区越高
+ *   └─ 推送记录卡  flex: 1 1 auto + min-height: 0 —— 吃掉剩余高度
+ *        ├─ Card Head 固定（不随数据滚动）
+ *        └─ Card Body 不负责纵向滚动，高度继续传给表格
+ *             └─ .ant-table-content 数据区内部纵向滚动，表头吸顶
+ * 详细的高度链说明见上方"高度链逐层传递"一节。 */
+.alarm-notify-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ===== 推送配置卡：紧凑型顶部配置区 ===== */
+
+/* 只占必要高度，不参与剩余空间分配（剩余高度全部留给推送记录） */
+.notify-config-card {
+  flex-shrink: 0;
+}
+
+/* 卡片头收紧（标准 48px → 40px） */
+.notify-config-card .ant-card-head {
+  min-height: 40px;
+  padding-inline: 16px;
+}
+
+.notify-config-card .ant-card-head-title {
+  font-size: 14px;
+  padding: 8px 0;
+}
+
+/* 卡片内边距收紧（标准 20px → 12px/16px） */
+.notify-config-card .ant-card-body {
+  padding: 12px 16px;
+}
+
+/* 配置项横向排列：固定 3 列网格。
+ * 字段变多时纵向只增加「行」，不再一列到底把页面撑长；
+ * 窄屏时列宽等比收窄（minmax(0,1fr) 保证不溢出）。 */
+.notify-config-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 16px;
+  align-items: start;
+}
+
+/* 字段纵向间距收紧（antd 默认 24px → 8px） */
+.notify-config-form .ant-form-item {
+  margin-bottom: 8px;
+}
+
+/* 标签与输入框之间收紧（antd 默认 8px），标签字号随表格统一为 13px */
+.notify-config-form .ant-form-item-label {
+  padding-bottom: 4px;
+}
+
+.notify-config-form .ant-form-item-label > label {
+  height: 20px;
+  font-size: 13px;
+}
+
+/* 长字段（Webhook 地址、短信手机号）占两列，避免与窄字段挤在一列里 */
+.notify-config-form .notify-field--wide {
+  grid-column: span 2;
+}
+
+/* 操作按钮跟随最后一个字段所在的网格行、底对齐，不再单独占一整行 */
+.notify-config-form > .ant-space {
+  align-self: end;
+}
+
+/* ===== 推送记录卡：表头固定 + 数据区内部滚动 ===== */
+.push-logs-card {
+  flex: 1 1 auto;
+  /* 兜底：窗口极矮时也保证记录卡有可用高度（不足时整页滚动，而不是压成一条） */
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 卡片头固定，不参与滚动 */
+.push-logs-card > .ant-card-head {
+  flex-shrink: 0;
+  min-height: 40px;
+  padding-inline: 16px;
+}
+
+.push-logs-card > .ant-card-head .ant-card-head-title {
+  font-size: 14px;
+  padding: 8px 0;
+}
+
+/* 卡片体不负责纵向滚动：只把高度往下传。
+ * display: flex 是必需的一环 —— 没有它，下一层的 flex: 1 1 auto / min-height: 0
+ * 全都落空（子元素退化成普通块级流），表格依旧按内容自然增高并被卡体裁掉。 */
+.push-logs-card > .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px 16px;
+  overflow: hidden;
+}
+
+/* 表格包装层 → 列容器：逐层 flex 传递高度（antd 固定 DOM，缺一层高度就断） */
+.push-logs-card > .ant-card-body > .ant-table-wrapper,
+.push-logs-card > .ant-card-body > .ant-table-wrapper > .ant-spin-nested-loading,
+.push-logs-card > .ant-card-body > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container,
+.push-logs-card > .ant-card-body > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table,
+.push-logs-card > .ant-card-body > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table > .ant-table-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 数据区：真正的纵向滚动容器（表头 sticky 以它为参照） */
+.push-logs-card > .ant-card-body > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table > .ant-table-container > .ant-table-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto !important;
+}
+
+/* 表头在数据区内部滚动时保持可见 */
+.push-logs-card > .ant-card-body > .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table > .ant-table-container > .ant-table-content > table > .ant-table-thead > tr > th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* 记录表是 size="small"（信息密度优先，作为日志一览用）：
+ * 行高交回小尺寸自带的 8px 内边距（全局的 52px 行高对这张表过于宽松），
+ * 同样高度下能多看到几条记录。仅作用于本页这张表，不影响其它页面。 */
+.push-logs-card .ant-table-tbody > tr:not(.ant-table-measure-row) {
+  height: auto;
+}
+
+.push-logs-card .ant-table-tbody > tr:not(.ant-table-measure-row) > td {
+  padding: 8px 12px !important;
+}

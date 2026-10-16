@@ -1,0 +1,17 @@
+# 依赖与构建产物（镜像内各自安装/构建）
+**/node_modules
+**/build
+**/dist
+
+# 环境变量与运行时数据
+**/.env
+backend/data
+
+# 版本控制
+.git
+.gitignore
+
+# 其他
+*.log
+.idea
+.vscode

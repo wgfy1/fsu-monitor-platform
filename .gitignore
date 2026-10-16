@@ -1,0 +1,67 @@
+# FSU设备监控平台 .gitignore
+
+# 数据文件
+data/
+
+# 环境变量
+.env
+
+# 日志
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 依赖和构建
+node_modules/
+dist/
+build/
+
+# Docker
+.docker/
+
+# 其他环境配置文件
+.env.*
+!.env.example
+!**/.env.example
+
+# SQLite数据库及日志文件
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+# Local temporary files
+/.tmp-*/
+/.orphan-check.js
+/.patch-ui-rest.py
+/.patch-ui2.py
+/NUL
+
+# Backup files
+*.bak
+
+# Local Claude settings
+.claude/settings.local.json
+
+# Local temporary files
+/.tmp-*/
+/.orphan-check.js
+/.patch-ui-rest.py
+/.patch-ui2.py
+/NUL
+
+# Backup files
+*.bak
+
+# Legacy and local-only MQTT configuration
+/mosquitto.conf
+/backend/test-mqtt.js

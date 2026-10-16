@@ -1,0 +1,55 @@
+services:
+  backend:
+    build:
+      # context 为项目根：Dockerfile 需要同时访问 frontend/（构建前端）与 backend/
+      context: .
+      dockerfile: backend/Dockerfile
+      # 前端在镜像内构建，地图 Key 必须在构建期注入（.env 已被 .dockerignore 排除）
+      args:
+        - REACT_APP_AMAP_KEY=${REACT_APP_AMAP_KEY:-}
+        - REACT_APP_AMAP_SECURITY_CODE=${REACT_APP_AMAP_SECURITY_CODE:-}
+    container_name: fsu-backend
+    ports:
+      - "3001:3001"   # HTTP：前端页面 + API（单端口，cpolar 一个地址即可访问平台）
+      - "1883:1883"   # 内置 MQTT Broker（设备接入）
+    volumes:
+      # 本地开发默认使用 ./backend/data；生产环境由部署脚本设置 FSU_DATA_DIR=/data/fsu-data。
+      # 容器内统一挂载到 /app/data。
+      - ${FSU_DATA_DIR:-./backend/data}:/app/data
+    # 应用配置的唯一来源：backend/.env（服务器上已存在的生产配置文件）
+    # MQTT_USERNAME / MQTT_PASSWORD / MQTT_ALLOW_ANONYMOUS / JWT_SECRET /
+    # ADMIN_INITIAL_* / OFFLINE_THRESHOLD / DATA_* 等一律从该文件读取，
+    # 不在此重复声明、也不复制到根目录 .env，密码只保存一份。
+    # ⚠️ 注意：下方 environment 的优先级高于 env_file，同名变量会覆盖 .env 的值，
+    #    因此这里只保留“容器内部固定值”，不要再把 MQTT_* 加回 environment。
+    env_file:
+      - ./backend/.env
+    environment:
+      # ===== 以下为容器内部固定值：与挂载点/端口映射强绑定，必须固定 =====
+      - NODE_ENV=production
+      # 容器内监听端口，必须与上面 ports 的 3001:3001 一致
+      - PORT=3001
+      # 容器内数据库路径固定为 /app/data，宿主机路径由 FSU_DATA_DIR 决定。
+      - DB_PATH=/app/data/fsu.db
+      # 内置 MQTT Broker：容器内固定为内置 + 本机 1883
+      - EMBEDDED_BROKER=true
+      - MQTT_BROKER_HOST=localhost
+      - MQTT_BROKER_PORT=1883
+      # 厂家协议 FSU 接入必须启用 MQTT：固定 mqtt
+      # （后端代码默认值同为 mqtt；在此固定可避免 .env 缺项导致
+      #  MQTT/内置 Broker 不启动、FSU 全部失联）
+      - CONNECT_MODE=mqtt
+      # 前端构建产物由后端托管（Dockerfile 多阶段构建自动放入 /app/frontend-build）
+      - STATIC_DIR=/app/frontend-build
+    restart: unless-stopped
+    networks:
+      - fsu-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/webhook/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  fsu-network:
+    driver: bridge

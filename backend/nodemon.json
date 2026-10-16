@@ -1,0 +1,5 @@
+{
+  "ignore": [
+    "scripts/fsu-protocol-test/tmp/**"
+  ]
+}

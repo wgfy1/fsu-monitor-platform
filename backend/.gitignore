@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/
+*.log
+.env
+.DS_Store
+# Legacy and local-only MQTT files
+/mosquitto.conf
+/backend/test-mqtt.js
+
+# 协议自测脚本的运行产物：临时库、库快照（test.db.bak-* 不被 *.db/*.bak 覆盖）、
+# 自测后端日志、结果 JSON —— 全部是本机跑测留下的，不应随源码提交。
+/scripts/fsu-protocol-test/tmp/
