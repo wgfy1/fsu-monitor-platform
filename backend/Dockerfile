@@ -24,19 +24,11 @@ RUN npm run build
 # ============================================================
 # 阶段二：后端（托管前端产物，单端口部署）
 # ============================================================
-FROM node:18-bookworm-slim
+FROM node:18-alpine
 WORKDIR /app
 
-# sqlite3 原生模块源码编译环境
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    make \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# 后端依赖（tsc 构建需要 devDependencies，构建完成后裁剪）
+# 后端依赖：优先使用 sqlite3 官方预编译包
 COPY backend/package*.json ./
-ENV PYTHON=/usr/bin/python3
 RUN npm ci --legacy-peer-deps
 # 拷贝源码并构建
 COPY backend/ ./
