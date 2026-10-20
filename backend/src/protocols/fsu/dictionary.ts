@@ -126,6 +126,82 @@ export function parseMeterDictionary(dictJson: string | null | undefined): Dicti
  * 效果：网关自身的「设备信息」条目（只有通用点 + 遥测点 + 设置/控制点）被自动排除；
  *      厂家将来新增功能子设备时，本函数无需修改即可自动识别。
  */
+// ============================================================
+// 通信状态：识别 与 告警抑制范围
+// ============================================================
+
+/**
+ * 通信状态监控点在厂家字典里的标识
+ *
+ * 实测 gw/v1/uploadDevInfo 的每个条目（含网关自身「设备信息」）都带：
+ *   { "meterId": "0", "meterName": "通信状态", "meterType": 2 }
+ *
+ * 识别时**同时**要求 meterId 与 meterName 命中（两者都来自厂家字典，
+ * 不是平台自造枚举）：
+ *   - 只按名称匹配，可能误伤同名的其它点位；
+ *   - 只按 ID 匹配，可能把厂家未命名的 "0" 点位当成通信状态。
+ *
+ * 注意：meterType=2 只说明它属于"遥信类"点位，**不代表它是一条告警**。
+ * 通信状态改由 heartbeat 状态图标展示，因此该点位产生的 alarmReport
+ * 不再作为普通告警创建/推送（但数据接收、解析、落库照旧）。
+ *
+ * ⚠️ 职责分离：本常量只用于**识别通信状态告警**；
+ *    前端在线/离线图标只用 heartbeat.params.online/offline，两者互不替代。
+ */
+export const COMM_STATUS_METER_ID = '0';
+export const COMM_STATUS_METER_NAME = '通信状态';
+
+/** 从字典里取出所有「通信状态」点位的 meterId（同时命中 ID 与名称，去重） */
+export function findCommStatusMeterIds(entries: DictionaryEntry[]): string[] {
+  const ids = new Set<string>();
+  for (const e of entries) {
+    for (const m of e.meters) {
+      if (m.meterId === COMM_STATUS_METER_ID
+        && (m.meterName || '').trim() === COMM_STATUS_METER_NAME) {
+        ids.add(m.meterId);
+      }
+    }
+  }
+  return Array.from(ids);
+}
+
+/**
+ * 通信状态事件的抑制范围
+ *
+ * subDeviceIds 用 pickFunctionalSubDevices() 推导 ——
+ * 即该网关下**真实的功能子设备**（含告警点、排除网关自身「设备信息」条目），
+ * 而不是写死五个全局 devId。厂家将来增减子设备，这里自动跟着变。
+ */
+export interface CommStatusEventScope {
+  /** 会产生通信状态上报的功能子设备 devId */
+  subDeviceIds: string[];
+  /** 通信状态点位对应的 meterId（取自厂家字典） */
+  meterIds: string[];
+}
+
+export function getCommStatusEventScope(entries: DictionaryEntry[]): CommStatusEventScope {
+  return {
+    subDeviceIds: pickFunctionalSubDevices(entries).map((o) => o.devId),
+    meterIds: findCommStatusMeterIds(entries),
+  };
+}
+
+/**
+ * 判断 (devId, meterId) 是否属于「功能子设备的通信状态事件」
+ *
+ * 只有**同时**命中目标子设备与通信状态点位才算 ——
+ * 子设备的其它告警点、以及网关自身条目的通信状态都不在此范围。
+ */
+export function isSubDeviceCommStatusEvent(
+  entries: DictionaryEntry[],
+  devId: string,
+  meterId: string
+): boolean {
+  if (entries.length === 0) return false;
+  const scope = getCommStatusEventScope(entries);
+  return scope.subDeviceIds.includes(devId) && scope.meterIds.includes(meterId);
+}
+
 export function pickFunctionalSubDevices(entries: DictionaryEntry[]): SubDeviceOption[] {
   if (entries.length === 0) return [];
 

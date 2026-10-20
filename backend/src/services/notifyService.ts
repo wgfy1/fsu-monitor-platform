@@ -8,35 +8,16 @@ import { AlarmRulesService } from '../utils/alarmRules';
 //    dictionary 只依赖 models/database，mapping 是纯函数，均无环。
 import { loadMeterDictionary } from '../protocols/fsu/dictionary';
 import { findDevName } from '../protocols/fsu/mapping';
+// 通知时间：显式使用 Asia/Shanghai，不再依赖宿主机/容器本地时区（容器是 UTC）
+import { formatBeijingTime } from '../utils/beijingTime';
+// 通知文案是纯函数，抽出去便于测试「钉钉与短信共用同一份时间文本」
+import { buildNotifyText } from '../utils/notifyText';
 
 /**
  * 平台展示当前环境是否已接入短信供应商（预留扩展：未来接入真实供应商时设置 SMS_PROVIDER）
  */
 export function isSmsProviderAvailable(): boolean {
   return !!process.env.SMS_PROVIDER;
-}
-
-/**
- * 本地时间格式化 YYYY-MM-DD HH:mm:ss（平台运行于中国时区服务器，无时区库依赖）
- */
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
-/**
- * 平台内部严重程度 → 文案
- *
- * 'vendor' 是 FSU 厂家告警的占位值，含义是"**平台未定级**"：
- * 协议只给了厂家自己的 alarmLevel(1~5)，没有给出它与严重/警告的对应关系，
- * 平台不映射、也不冒充已定级，因此这里返回空串让调用方改用厂家原始级别。
- */
-function severityLabel(severity: string): string {
-  if (severity === 'critical') return '严重';
-  if (severity === 'warning') return '警告';
-  if (severity === 'vendor') return '';
-  return severity;
 }
 
 /** 手机号脱敏: 138****5678 */
@@ -366,34 +347,25 @@ export class NotifyService {
    * 构建钉钉 markdown 与短信文案
    */
   private static async formatContent(info: NotifyAlarmInfo): Promise<{ dingtalk: string; sms: string }> {
-    // 面向用户的文案：不出现"厂家"字样，也不暴露内部枚举（如 severity='vendor'）。
-    // 「级别」一律用协议 4.4 的原始 alarmLevel；缺失时按内部严重程度兜底，
-    // 两者都没有则显示"未定级"。
-    const levelText = info.alarmLevel != null
-      ? `级别 ${info.alarmLevel}`
-      : (severityLabel(info.severity) || '未定级');
     // 子设备名称：FSU 告警的 type 存的是 devId，名称取自设备上报的字典；
     // 字典查不到则回退旧物模型的类型名映射（非 FSU 链路仍在用）。
     const vendorDevName = findDevName(await loadMeterDictionary(info.deviceId), info.type);
     const typeName = vendorDevName ?? AlarmRulesService.getAlarmTypeName(info.type);
-    const timeStr = formatTime(Date.now());
-    const name = info.deviceName || info.deviceId;
 
-    const dingtalk = [
-      `### ${levelText}告警通知`,
-      `- **级别**：${levelText}`,
-      `- **设备**：${name}（${info.deviceId}）`,
-      `- **子设备**：${typeName}`,
-      `- **时间**：${timeStr}`,
-      ...(info.location ? [`- **位置**：${info.location}`] : []),
-      `- **内容**：${info.message || '无'}`,
-      `---`,
-      `请及时登录平台「告警中心」查看处理。`
-    ].join('\n');
+    // 时间来源保持为"推送发生的当前时间"（本次不改），只是改为显式北京时间。
+    // 同一个 timeStr 同时传给钉钉与短信，保证两条通知时间完全一致。
+    const timeStr = formatBeijingTime(Date.now());
 
-    const sms = `【FSU监控】${levelText}告警！设备：${name}（${info.deviceId}），${typeName}：${info.message || '无'}，时间 ${timeStr}`.slice(0, 200);
-
-    return { dingtalk, sms };
+    return buildNotifyText({
+      severity: info.severity,
+      alarmLevel: info.alarmLevel ?? null,
+      deviceId: info.deviceId,
+      deviceName: info.deviceName ?? null,
+      typeName,
+      location: info.location ?? null,
+      message: info.message,
+      timeStr,
+    });
   }
 
   /**

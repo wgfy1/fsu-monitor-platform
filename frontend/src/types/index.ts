@@ -49,6 +49,33 @@ export interface Device {
   alarmCount?: number;
 }
 
+/**
+ * 子设备通信状态（GET /api/devices/:id/sub-device-comm-status）
+ *
+ * 唯一数据来源：厂家心跳报文 gw/v1/heartbeat（协议 4.2）的
+ * params.online / params.offline（在线设备列表 / 离线设备列表）。
+ * 这是**当前状态**，与 alarms 表无关，也不由告警或监控点值推断。
+ */
+export type SubDeviceCommStatus = 'online' | 'offline' | 'unknown';
+
+/** 一个功能子设备的通信状态 */
+export interface SubDeviceCommStatusEntry {
+  devId: string;
+  /** 厂家字典里的子设备名（未上报字典时为 null） */
+  devName: string | null;
+  status: SubDeviceCommStatus;
+  /** 本状态依据的心跳时间（毫秒）；从未收到有效心跳为 null */
+  lastHeartbeatAt: number | null;
+}
+
+export interface SubDeviceCommStatusResult {
+  deviceId: string;
+  /** 最近一次有效心跳时间（毫秒）；从未上报/后端重启后为 null */
+  lastHeartbeatAt: number | null;
+  /** 由厂家字典动态识别出的**所有**功能子设备（不含网关自身「设备信息」条目） */
+  subDevices: SubDeviceCommStatusEntry[];
+}
+
 /** 告警类型 */
 export type AlarmType = string;
 

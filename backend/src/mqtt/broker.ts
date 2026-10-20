@@ -8,7 +8,7 @@ import {
 import { handleDeviceMessage } from './messageHandler';
 import {
   routeUplink, registerPublisher, TOPIC_LOGIN, normalizeGwId, downlinkTopic, METHODS,
-  onGatewayOffline, onGatewaySubscribed,
+  onGatewayOffline, onGatewaySubscribed, clearHeartbeatStatus,
 } from '../protocols/fsu';
 
 /**
@@ -58,6 +58,15 @@ export class EmbeddedBroker {
   private connectedDeviceIds = new Set<string>();
   /** MQTT clientId → 平台设备ID（厂家协议 login 时登记，断开时清理） */
   private clientDeviceIds = new Map<string, string>();
+  /**
+   * MQTT clientId → 当前连接对象引用
+   *
+   * 用于区分"新连接接管"与"旧连接断开"：
+   * 厂家快速重连时 aedes 会用相同 clientId 建立新连接并关闭旧连接，
+   * 旧连接的 clientDisconnect 事件可能在新连接已登录、已收到心跳之后才到达。
+   * 只有当前连接的断开事件才作废心跳快照，避免旧事件清掉新连接的状态。
+   */
+  private gatewayConnections = new Map<string, any>();
 
   constructor(private port = 1883) {
     this.aedes = new Aedes({
@@ -177,17 +186,42 @@ export class EmbeddedBroker {
    * 平台内部客户端不参与设备状态跟踪。
    */
   private trackClientConnection(): void {
+    // 新连接建立（认证通过后）：同一 clientId 被新连接接管时，
+    // 作废上一连接周期的心跳快照 → 在收到新周期第一条有效心跳前，
+    // 子设备一律显示"离线"（不因 MQTT 已连接就显示在线/未知）。
+    this.aedes.on('client', (client: any) => {
+      if (!client?.id || EmbeddedBroker.isPlatformClient(client)) return;
+      const clientId = String(client.id);
+      const prev = this.gatewayConnections.get(clientId);
+      this.gatewayConnections.set(clientId, client);
+      if (prev === client) return; // 同一连接（不应发生），不重复处理
+
+      const knownDeviceId = this.clientDeviceIds.get(clientId);
+      clearHeartbeatStatus(knownDeviceId ?? normalizeGwId(clientId));
+    });
+
     this.aedes.on('clientDisconnect', (client: any) => {
       const clientId = client?.id ? String(client.id) : '';
       if (!clientId || EmbeddedBroker.isPlatformClient(client)) return;
 
-      const deviceId = this.clientDeviceIds.get(clientId);
-      if (!deviceId) return; // 未完成 login 的连接（如认证后被拒绝），无设备可标记
+      // 旧连接的断开事件：该 clientId 已被新连接接管 → 不得清除新连接的状态
+      if (this.gatewayConnections.get(clientId) !== client) {
+        console.log(`[MQTT] 忽略旧连接的断开事件: clientId=${clientId}（已被新连接接管）`);
+        return;
+      }
+      this.gatewayConnections.delete(clientId);
 
+      const deviceId = this.clientDeviceIds.get(clientId);
+      // 未完成 login 的连接（如认证后被拒绝）没有设备可标记，
+      // 但仍按 clientId 作废可能存在的会话快照（幂等）。
       this.clientDeviceIds.delete(clientId);
+      clearHeartbeatStatus(deviceId ?? normalizeGwId(clientId));
+      if (!deviceId) return;
+
       this.connectedDeviceIds.delete(deviceId);
       // 平台主动校时：结束本次上线事件（下次重连算新的上线，会再校时一次）
       onGatewayOffline(deviceId);
+      // 网关断开后，所有功能子设备显示"离线"（快照已作废，不再沿用旧状态）
       DeviceService.setMqttConnectionState(deviceId, false).catch((err) => {
         console.error(`[MQTT] 处理设备断开事件失败: deviceId=${deviceId}`, err);
       });

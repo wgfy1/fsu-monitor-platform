@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Row, Col, Button, Descriptions, Table, Tag, Space, message, Spin, Modal, Form, Input, Dropdown, Alert, Tooltip, Select, Switch, Divider } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined, EditOutlined, PoweroffOutlined, CloudUploadOutlined, SyncOutlined, BellOutlined, SettingOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
@@ -8,6 +8,7 @@ import { deviceApi, alarmApi } from '../services/api';
 import { formatTimestamp } from '../utils/date';
 import { ValueUnit, PillTag, NoData } from '../utils/format';
 import DeviceStatusTag from '../components/DeviceStatusTag';
+import CommStatusTag from '../components/CommStatusTag';
 import HistoryChart, { SUB_DEVICE_SERIES } from '../components/HistoryChart';
 import PageContainer from '../components/PageContainer';
 import {
@@ -79,6 +80,12 @@ const DeviceDetail: React.FC = () => {
   const [device, setDevice] = useState<Device | null>(null);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
 
+  // ===== 子设备通信状态 =====
+  // { devId: 'online' | 'offline' }，唯一来源 = 厂家心跳报文（协议 4.2）的
+  // params.online / params.offline。未列出的 devId 由 CommStatusTag 显示"未知"，
+  // 前端**不做任何推断**（不看网关在线、不看告警、不看最后上报时间）。
+  const [commStatuses, setCommStatuses] = useState<Record<string, string>>({});
+
   // ===== 编辑设备名称 =====
   const [editOpen, setEditOpen] = useState(false);
   const [editForm] = Form.useForm();
@@ -120,6 +127,19 @@ const DeviceDetail: React.FC = () => {
   /** 子设备卡片标题右侧的「详情」入口（五个子设备统一样式） */
   const detailButton = (deviceType: string) => (
     <Button size="small" onClick={() => setDetailType(deviceType)}>详情</Button>
+  );
+
+  /**
+   * 子设备卡片标题右侧：通信状态标签 +「详情」入口
+   *
+   * 状态直接取自厂家心跳上报（后端接口透传），缺失时显示"未知"。
+   * 该标签纯展示，不触发任何告警或推送。
+   */
+  const subDeviceExtra = (devId: string, deviceType: string) => (
+    <Space size={8}>
+      <CommStatusTag status={commStatuses[devId]} />
+      {detailButton(deviceType)}
+    </Space>
   );
 
   /** 打开编辑弹窗：仅设备名称可编辑 */
@@ -365,11 +385,41 @@ const DeviceDetail: React.FC = () => {
     } catch (_) { /* no data */ }
   };
 
+  /**
+   * 读取子设备通信状态（只读）。
+   *
+   * 后端返回的是厂家心跳里明确列出的 devId；未列出的保持"未知"。
+   * 失败时静默保持原值 —— 状态图标不可用不应影响设备详情其它数据。
+   */
+  const loadCommStatus = useCallback(async () => {
+    if (!id) return;
+    try {
+      const res = await deviceApi.subDeviceCommStatus(id);
+      // 后端已按字典返回全部功能子设备（status 只会是 online/offline/unknown）。
+      // 这里只做 devId → status 的索引，缺失的 devId 由 CommStatusTag 显示"未知"。
+      const map: Record<string, string> = {};
+      for (const s of res.data?.subDevices ?? []) {
+        if (s?.devId) map[s.devId] = s.status;
+      }
+      setCommStatuses(map);
+    } catch {
+      /* 保持原值（缺失=未知），不弹提示：状态不可用不应影响页面其它数据 */
+    }
+  }, [id]);
+
   const handleRefresh = async () => {
     setLoading(true);
-    await Promise.all([loadDevice(), loadAlarms()]);
+    await Promise.all([loadDevice(), loadAlarms(), loadCommStatus()]);
     setLoading(false);
   };
+
+  // 厂家心跳是周期上报：用轻量轮询让图标跟随最新上报更新。
+  // 只请求状态接口，不触碰告警/推送链路；卸载时清理定时器。
+  useEffect(() => {
+    if (!id) return;
+    const timer = setInterval(loadCommStatus, 30000);
+    return () => clearInterval(timer);
+  }, [id, loadCommStatus]);
 
   useEffect(() => {
     handleRefresh();
@@ -933,7 +983,7 @@ const DeviceDetail: React.FC = () => {
       </Modal>
 
       {/* ====== 1. 电池信息 ====== */}
-      <Card title="🔋 电池信息" style={{ marginTop: 16 }} loading={loading} extra={detailButton('battery')}>
+      <Card title="🔋 电池信息" style={{ marginTop: 16 }} loading={loading} extra={subDeviceExtra(DEV_BATTERY, 'battery')}>
         <Descriptions bordered size="small" column={3}>
           {Object.entries(BATTERY_METERS).map(([meterId, label]) => {
             const v = toNumber(getMeterValue(device, DEV_BATTERY, meterId));
@@ -993,7 +1043,7 @@ const DeviceDetail: React.FC = () => {
       </Card>
 
       {/* ====== 2. 交流 ====== */}
-      <Card title="⚡ 交流" style={{ marginTop: 16 }} loading={loading} extra={detailButton('ac')}>
+      <Card title="⚡ 交流" style={{ marginTop: 16 }} loading={loading} extra={subDeviceExtra(DEV_RECTIFIER, 'ac')}>
         {renderSubDeviceAlarmEntry(DEV_RECTIFIER, '交流告警')}
         {/* 交流输入（整流设备） */}
         <SectionTitle>交流输入（整流设备）</SectionTitle>
@@ -1035,7 +1085,7 @@ const DeviceDetail: React.FC = () => {
       </Card>
 
       {/* ====== 3. 直流 ====== */}
-      <Card title="⚡ 直流" style={{ marginTop: 16 }} loading={loading} extra={detailButton('dc')}>
+      <Card title="⚡ 直流" style={{ marginTop: 16 }} loading={loading} extra={subDeviceExtra(DEV_DC, 'dc')}>
         {renderSubDeviceAlarmEntry(DEV_DC, '直流告警')}
         {/* 直流输出（直流系统） */}
         <SectionTitle>直流输出（直流系统）</SectionTitle>
@@ -1052,7 +1102,7 @@ const DeviceDetail: React.FC = () => {
       </Card>
 
       {/* ====== 4. 温湿度 ====== */}
-      <Card title="🌡️ 温湿度" style={{ marginTop: 16 }} loading={loading} extra={detailButton('env')}>
+      <Card title="🌡️ 温湿度" style={{ marginTop: 16 }} loading={loading} extra={subDeviceExtra(DEV_ENV, 'env')}>
         {renderSubDeviceAlarmEntry(DEV_ENV, '温湿度告警')}
         <Descriptions bordered size="small" column={2}>
           {Object.entries(ENV_METERS).map(([meterId, label]) => (
@@ -1070,7 +1120,7 @@ const DeviceDetail: React.FC = () => {
       </Card>
 
       {/* ====== 5. 门磁/门禁 ====== */}
-      <Card title="🚪 门磁/门禁" style={{ marginTop: 16 }} loading={loading} extra={detailButton('door')}>
+      <Card title="🚪 门磁/门禁" style={{ marginTop: 16 }} loading={loading} extra={subDeviceExtra(DEV_DOOR, 'door')}>
         {renderSubDeviceAlarmEntry(DEV_DOOR, '告警')}
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="门禁状态">

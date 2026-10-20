@@ -3,7 +3,8 @@ import { Alarm, AlarmType, AlarmSeverity } from '../types';
 import NotifyService from './notifyService';
 // ⚠️ 从具体模块引入（不要用 '../protocols/fsu' index，避免 handlers 反向依赖造成循环）
 import {
-  loadMeterDictionary, parseMeterDictionary, pickFunctionalSubDevices, SubDeviceOption,
+  loadMeterDictionary, parseMeterDictionary, pickFunctionalSubDevices,
+  getCommStatusEventScope, SubDeviceOption,
 } from '../protocols/fsu/dictionary';
 import { findDevName } from '../protocols/fsu/mapping';
 
@@ -81,7 +82,56 @@ export class AlarmService {
    * 支持的组合条件：租户隔离 / 设备 / 状态 / 类型 / 时间范围 / 关键词
    * 全部使用参数化占位符，不做任何字符串拼接。
    */
-  private static buildAlarmWhere(q: {
+  /**
+   * 构造「子设备通信状态事件」的查询排除条件
+   *
+   * 背景：通信状态自本次修改起不再作为普通告警创建（见 handlers.handleAlarmReport），
+   * 但数据库里可能仍有**升级前**写入的历史行。按要求保留记录、不批量删除，
+   * 只在查询层排除 —— 告警中心列表、总数、统计、趋势都不会再出现它们。
+   *
+   * 判据与创建侧**共用同一套字典推导**（protocols/fsu/dictionary）：
+   *   device_id = 该网关
+   *   AND type  ∈ 该网关的功能子设备 devId
+   *   AND value ∈ 该网关字典里「通信状态」的 meterId
+   * 不写死任何 devId / meterId，也不影响子设备的其它真实告警。
+   *
+   * @param prefix 列前缀：告警列表查询带别名 'a.'；统计/趋势的裸表传 ''
+   */
+  private static async buildCommStatusExclusion(
+    prefix: string = ''
+  ): Promise<{ sql: string; params: any[] }> {
+    try {
+      const rows = await database.query('SELECT device_id, meters_json FROM device_meters');
+      const groups: Array<{ deviceId: string; devIds: string[]; meterIds: string[] }> = [];
+      for (const row of rows as any[]) {
+        const scope = getCommStatusEventScope(parseMeterDictionary(row?.meters_json));
+        if (scope.subDeviceIds.length === 0 || scope.meterIds.length === 0) continue;
+        groups.push({
+          deviceId: String(row.device_id),
+          devIds: scope.subDeviceIds,
+          meterIds: scope.meterIds,
+        });
+      }
+      if (groups.length === 0) return { sql: '', params: [] };
+
+      const parts: string[] = [];
+      const params: any[] = [];
+      for (const g of groups) {
+        parts.push(
+          `(${prefix}device_id = ? AND ${prefix}type IN (${g.devIds.map(() => '?').join(',')})` +
+          ` AND ${prefix}value IN (${g.meterIds.map(() => '?').join(',')}))`
+        );
+        params.push(g.deviceId, ...g.devIds, ...g.meterIds);
+      }
+      return { sql: ` AND NOT (${parts.join(' OR ')})`, params };
+    } catch (error) {
+      // 字典读不到时**不排除任何行**：宁可多显示，也不能因异常把真实告警藏掉
+      console.error('构造通信状态排除条件失败（本次查询不做排除）:', error);
+      return { sql: '', params: [] };
+    }
+  }
+
+  private static async buildAlarmWhere(q: {
     deviceId?: string;
     resolved?: number;
     type?: AlarmType;
@@ -89,7 +139,7 @@ export class AlarmService {
     startTime?: number | null;
     endTime?: number | null;
     search?: string | null;
-  }): { where: string; params: any[] } {
+  }): Promise<{ where: string; params: any[] }> {
     let where = '';
     const params: any[] = [];
 
@@ -129,6 +179,12 @@ export class AlarmService {
       where += " AND a.device_id LIKE ? ESCAPE '\\'";
       params.push(`%${escaped}%`);
     }
+
+    // 历史通信状态行：记录保留在库里，但不出现在列表与总数中。
+    // 条件追加在最后，占位符顺序与 params.push 顺序一致。
+    const exclusion = await AlarmService.buildCommStatusExclusion('a.');
+    where += exclusion.sql;
+    params.push(...exclusion.params);
 
     return { where, params };
   }
@@ -242,7 +298,7 @@ export class AlarmService {
     search?: string | null
   ): Promise<Alarm[]> {
     try {
-      const { where, params } = AlarmService.buildAlarmWhere({
+      const { where, params } = await AlarmService.buildAlarmWhere({
         deviceId, resolved, type, tenantId, startTime, endTime, search,
       });
       const sql = `
@@ -278,7 +334,7 @@ export class AlarmService {
     search?: string | null;
   }): Promise<number> {
     try {
-      const { where, params } = AlarmService.buildAlarmWhere(q);
+      const { where, params } = await AlarmService.buildAlarmWhere(q);
       const row = await database.get(
         `SELECT COUNT(*) AS count
          FROM alarms a
@@ -426,10 +482,12 @@ export class AlarmService {
     withoutLevel: number;
   }> {
     try {
-      const scope = tenantId
+      // 统计口径与告警中心列表一致：历史通信状态行不计入任何计数
+      const exclusion = await AlarmService.buildCommStatusExclusion('');
+      const scope = (tenantId
         ? ' AND device_id IN (SELECT id FROM devices WHERE tenant_id = ?)'
-        : '';
-      const scopeParams = tenantId ? [tenantId] : [];
+        : '') + exclusion.sql;
+      const scopeParams = [...(tenantId ? [tenantId] : []), ...exclusion.params];
       const total = await database.get(`SELECT COUNT(*) as count FROM alarms WHERE 1=1${scope}`, scopeParams);
       const unresolved = await database.get(`SELECT COUNT(*) as count FROM alarms WHERE resolved = 0${scope}`, scopeParams);
       const critical = await database.get(`SELECT COUNT(*) as count FROM alarms WHERE severity = ? AND resolved = 0${scope}`, ['critical', ...scopeParams]);
@@ -477,6 +535,8 @@ export class AlarmService {
     try {
       // created_at 由 DB DEFAULT strftime('%s') 生成，是秒级时间戳
       const startTime = Math.floor(Date.now() / 1000) - (days * 24 * 60 * 60);
+      // 趋势口径与列表/统计一致：历史通信状态行不计入
+      const exclusion = await AlarmService.buildCommStatusExclusion('');
       const sql = `
         SELECT
           DATE(created_at, 'unixepoch') as date,
@@ -484,11 +544,14 @@ export class AlarmService {
           SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical_count,
           SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning_count
         FROM alarms
-        WHERE created_at >= ?${tenantId ? ' AND device_id IN (SELECT id FROM devices WHERE tenant_id = ?)' : ''}
+        WHERE created_at >= ?${tenantId ? ' AND device_id IN (SELECT id FROM devices WHERE tenant_id = ?)' : ''}${exclusion.sql}
         GROUP BY DATE(created_at, 'unixepoch')
         ORDER BY date ASC
       `;
-      return await database.query(sql, tenantId ? [startTime, tenantId] : [startTime]);
+      return await database.query(
+        sql,
+        [...(tenantId ? [startTime, tenantId] : [startTime]), ...exclusion.params]
+      );
     } catch (error) {
       console.error('获取告警趋势失败:', error);
       return [];

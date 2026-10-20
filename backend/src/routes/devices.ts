@@ -14,6 +14,12 @@ import {
 } from '../services/remoteService';
 // 平台主动校时（协议 4.8，平台→网关）：设备校时配置的读写
 import NtpConfigService from '../services/ntpConfigService';
+// 子设备通信状态：厂家心跳（协议 4.2）落网关会话，这里只读暴露给前端
+import { getSubDeviceCommStatuses, getSession } from '../protocols/fsu/session';
+// 功能子设备由厂家字典动态识别（不写死 devId）
+import {
+  loadMeterDictionary, parseMeterDictionary, pickFunctionalSubDevices,
+} from '../protocols/fsu/dictionary';
 const router = Router();
 
 /**
@@ -241,6 +247,60 @@ router.get('/:id/fsu-history', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('获取厂家 FSU 历史数据失败:', error);
     res.sendServerError('获取厂家 FSU 历史数据失败');
+  }
+});
+
+/**
+ * 功能子设备的通信状态（只读）
+ * GET /api/devices/:id/sub-device-comm-status
+ *
+ * **唯一数据来源**：厂家心跳报文 gw/v1/heartbeat 的 params.online / params.offline
+ * （协议 4.2「在线设备列表 / 离线设备列表」，协议说明其用途是
+ *  "网关与平台保持在线状态一致"）。
+ *
+ * 不使用以下任何推断方式：MQTT 网关连接状态、最后上报时间、是否存在告警、
+ * 监控点值（meterId=0 的取值）、平台自设的心跳超时阈值。
+ *
+ * 子设备范围：由厂家字典经 pickFunctionalSubDevices() **动态识别**
+ * （自动排除网关自身「设备信息」条目），不写死任何 devId。
+ *
+ * 返回：
+ *   {
+ *     deviceId,
+ *     lastHeartbeatAt: number|null,
+ *     subDevices: [{ devId, devName, status: 'online'|'offline'|'unknown', lastHeartbeatAt }]
+ *   }
+ * status 为 unknown 的情形：devId 不在两个列表里 / 同时出现在两个列表 /
+ * 尚未收到有效心跳（含后端重启后）。本接口不臆造在线或离线。
+ *
+ * 权限：与查看设备详情一致（只读、租户隔离）。
+ */
+router.get('/:id/sub-device-comm-status', async (req: Request, res: Response) => {
+  try {
+    const device = await DeviceService.getDeviceById(req.params.id, deviceScope(req.user));
+    if (!device) return res.sendNotFound('设备不存在');
+
+    const deviceId = String(device.id);
+    // 功能子设备：来自厂家 uploadDevInfo 字典，动态识别、不写死
+    const entries = parseMeterDictionary(await loadMeterDictionary(deviceId));
+    let subDevices = pickFunctionalSubDevices(entries).map((o) => ({
+      devId: o.devId,
+      devName: o.devName,
+    }));
+
+    // 字典尚未上报时的兜底：只返回心跳里实际出现过的 devId（devName 未知）。
+    // 不据此臆造"功能子设备"，仅保证图标在字典到达前也能反映厂家上报。
+    if (subDevices.length === 0) {
+      const s = getSession(deviceId);
+      subDevices = Array.from(new Set([...(s?.online ?? []), ...(s?.offline ?? [])]))
+        .map((devId) => ({ devId, devName: null }));
+    }
+
+    const result = getSubDeviceCommStatuses(deviceId, subDevices);
+    res.sendSuccess({ deviceId, ...result }, '获取子设备通信状态成功');
+  } catch (error) {
+    console.error('获取子设备通信状态失败:', error);
+    res.sendServerError('获取子设备通信状态失败');
   }
 });
 

@@ -260,6 +260,25 @@ body,
   color: var(--state-info-fg);
 }
 
+/* 子设备通信状态（CommStatusTag）：小图标 + 文字。
+ * 沿用上面 .status-tag 的状态配色，只把尺寸收小，避免挤占卡片标题行。 */
+.comm-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 20px;
+  vertical-align: middle;
+}
+
+.comm-status .comm-status__icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+}
+
 /* ---------- 展开行（站点管理 → 设备列表）---------- */
 .expand-panel {
   background: #fafafa;

@@ -74,7 +74,7 @@ function dbRun(sql, params = []) {
 // ==================================================================
 // B/C 段（远程业务 API、Excel 批量导入）用的辅助函数
 // ==================================================================
-const API = `http://localhost:${PORT}/api`;
+const API = `http://127.0.0.1:${PORT}/api`;
 
 /** 平台管理员凭据（与 startBackend 注入的 ADMIN_INITIAL_* 保持一致，同样每轮随机） */
 const ADMIN_USER = 'admin';
@@ -147,7 +147,10 @@ async function startBackend() {
       DB_PATH: DB,
       PORT: String(PORT),
       MQTT_BROKER_PORT: String(MQTT_PORT),
-      MQTT_BROKER_HOST: 'localhost',
+      // 用 127.0.0.1 而非 localhost：本机 localhost 会优先解析为 ::1，
+      // 而内置 Broker 监听 IPv4，Node 18 默认不做 IPv6→IPv4 回退。
+      // 生产 backend/.env 也使用 127.0.0.1。
+      MQTT_BROKER_HOST: '127.0.0.1',
       MQTT_USERNAME: MQTT_USER, MQTT_PASSWORD: MQTT_PASS,
       MQTT_ALLOW_ANONYMOUS: 'false',
       FSU_LOGIN_USERNAME: FSU_USER, FSU_LOGIN_PASSWORD: FSU_PASS,
@@ -212,7 +215,7 @@ function stopBackend() {
   // 不会在测试进程里再实例化一个 Database 单例。
   const mqttLib = require('mqtt');
   const downstreamMod = require('../../dist/protocols/fsu/downstream');
-  const dclient = mqttLib.connect(`mqtt://localhost:${MQTT_PORT}`, {
+  const dclient = mqttLib.connect(`mqtt://127.0.0.1:${MQTT_PORT}`, {
     clientId: 'fsu-platform-selftest', username: MQTT_USER, password: MQTT_PASS,
   });
   await new Promise((res, rej) => { dclient.on('connect', res); dclient.on('error', rej); });
@@ -487,7 +490,7 @@ function stopBackend() {
   // ============ 20. 非法 JSON ============
   gw.publishRaw(`gw/v1/dataReport/${GW.norm}`, '{ this is not json ');
   await sleep(500);
-  const aliveAfterBadJson = await fetch(`http://localhost:${PORT}/api/webhook/health`).then((r) => r.status).catch(() => 0);
+  const aliveAfterBadJson = await fetch(`http://127.0.0.1:${PORT}/api/webhook/health`).then((r) => r.status).catch(() => 0);
   check('20 非法 JSON 被拒绝且服务存活', 200, aliveAfterBadJson);
 
   // ============ 21. 超过 2MB 报文 ============
@@ -1307,6 +1310,437 @@ function stopBackend() {
     { rows: 2, pushes: 2 }, { rows: rows9501, pushes: push3 });
 
   await new Promise((r) => hook.close(r));
+
+  // ==================================================================
+  // G. 子设备通信状态：告警抑制 + 状态接口 + 历史行查询过滤
+  //
+  // 五个"目标子设备"由**厂家字典**推导（pickFunctionalSubDevices：有告警点、
+  // 排除网关自身「设备信息」条目），不是写死的全局 devId。
+  // 通信状态点位同样按字典里的 meterName="通信状态" 识别（实测 meterId="0"）。
+  // ==================================================================
+  console.log('\n---------- G. 子设备通信状态 ----------');
+
+  // 独立 mock 推送端（E 段的 hook 已关闭，这里必须重新指向一个可用地址）
+  const gReceived = [];
+  const gHook = http.createServer((_q, s) => {
+    let body = '';
+    _q.on('data', (c) => { body += c; });
+    _q.on('end', () => {
+      gReceived.push({ url: _q.url, body });
+      s.setHeader('Content-Type', 'application/json');
+      s.end(JSON.stringify({ errcode: 0, errmsg: 'ok' }));
+    });
+  });
+  await new Promise((r) => gHook.listen(0, '127.0.0.1', r));
+  const gHookUrl = `http://127.0.0.1:${gHook.address().port}/robot/send?access_token=commstatus-mock`;
+  const gCfg = await apiJson('PUT', '/notify/config',
+    { enabled: 1, dingtalk_enabled: 1, dingtalk_webhook: gHookUrl, dedupe_minutes: 30 }, adminToken);
+  await sleep(200);
+  check('通信G0 本段推送接收端已切到本地 mock', 0, gCfg.code);
+
+  const alarmRowsOf = async (serial) => (await dbGet(
+    'SELECT COUNT(*) c FROM alarms WHERE device_id = ? AND serial_no = ?',
+    [GW.norm, String(serial)])).c;
+  const pushTotalRows = async () => (await dbGet('SELECT COUNT(*) c FROM alarm_push_logs')).c;
+
+  // ---- G1 通信状态事件：不建告警、不推送 ----
+  const pushBeforeG1 = await pushTotalRows();
+  const gCommSerial = 9601;
+  const gComm = gw3.alarmReport({
+    alarmFlag: 1, alarmLevel: 2, alarmTime: Math.floor(Date.now() / 1000),
+    serialNo: gCommSerial, devId: '1246001', meterId: '0',
+  });
+  const gCommAck = await gw3.waitFor((r) => r.body && r.body.id === gComm.id);
+  await sleep(1200);
+  check('通信G1 目标子设备的通信状态事件（devId=1246001, meterId=0）不创建普通告警、不推送',
+    { code: 0, alarmRows: 0, pushDelta: 0 },
+    {
+      code: gCommAck.body.code,
+      alarmRows: await alarmRowsOf(gCommSerial),
+      pushDelta: (await pushTotalRows()) - pushBeforeG1,
+    });
+
+  // ---- G2 同一子设备的真实告警：照常入库 + 推送 ----
+  const pushBeforeG2 = await pushTotalRows();
+  const gRealSerial = 9602;
+  const gReal = gw3.alarmReport({
+    alarmFlag: 1, alarmLevel: 3, alarmTime: Math.floor(Date.now() / 1000),
+    serialNo: gRealSerial, devId: '1246001', meterId: '12160021001',
+  });
+  const gRealAck = await gw3.waitFor((r) => r.body && r.body.id === gReal.id);
+  await sleep(1500);
+  check('通信G2 同一子设备的真实告警仍然正常入库并推送（抑制不影响其它点位）',
+    { code: 0, alarmRows: 1, pushDelta: 1 },
+    {
+      code: gRealAck.body.code,
+      alarmRows: await alarmRowsOf(gRealSerial),
+      pushDelta: (await pushTotalRows()) - pushBeforeG2,
+    });
+
+  // ---- G2b 通信状态监控点的数据上报照常接收/落库（抑制只针对告警） ----
+  await gw3.dataReport({ devId: '1246001', meters: [{ meterId: '0', value: '1' }], isFull: 0 });
+  await sleep(700);
+  const commMeterRow = await dbGet(
+    `SELECT value FROM fsu_data_history
+      WHERE device_id = ? AND dev_id = ? AND meter_id = ?
+      ORDER BY id DESC LIMIT 1`,
+    [GW.norm, '1246001', '0']);
+  check('通信G2b 通信状态监控点的 dataReport 仍正常接收并落库（只屏蔽告警，不屏蔽数据）',
+    { value: '1' }, { value: commMeterRow && commMeterRow.value });
+
+  // ---- G3 网关自身条目（215001）的通信状态：不是目标子设备，保持原行为 ----
+  const gGwSerial = 9603;
+  const gGw = gw3.alarmReport({
+    alarmFlag: 1, alarmLevel: 2, alarmTime: Math.floor(Date.now() / 1000),
+    serialNo: gGwSerial, devId: '215001', meterId: '0',
+  });
+  const gGwAck = await gw3.waitFor((r) => r.body && r.body.id === gGw.id);
+  await sleep(1000);
+  check('通信G3 非目标条目（网关自身 215001）的通信状态不受影响，仍按原规则入库',
+    { code: 0, alarmRows: 1 },
+    { code: gGwAck.body.code, alarmRows: await alarmRowsOf(gGwSerial) });
+
+  // ---- G4 历史通信状态行：保留记录，但不出现在列表 / 总数 / 统计 / 趋势 ----
+  const legacySerial = '9599';
+  const listBefore = await apiJson('GET', `/alarms?deviceId=${GW.norm}&limit=1`, undefined, adminToken);
+  const statsBeforeLegacy = await apiJson('GET', '/alarms/stats', undefined, adminToken);
+  const trendBefore = await apiJson('GET', '/alarms/trend?days=7', undefined, adminToken);
+  const trendSum = (res) => ((res.data || []).reduce((n, x) => n + Number(x.count || 0), 0));
+
+  await dbRun(
+    `INSERT INTO alarms (device_id, type, severity, message, value, source,
+                         resolved, created_at, serial_no, alarm_level, is_history)
+     VALUES (?, '1246001', 'vendor', '历史通信状态告警', '0', 'MQTT', 0, ?, ?, 3, 0)`,
+    [GW.norm, Math.floor(Date.now() / 1000), legacySerial]
+  );
+  const statsAfterLegacy = await apiJson('GET', '/alarms/stats', undefined, adminToken);
+  const listRes = await apiJson('GET', `/alarms?deviceId=${GW.norm}&limit=500`, undefined, adminToken);
+  const trendAfter = await apiJson('GET', '/alarms/trend?days=7', undefined, adminToken);
+  const listedSerials = (listRes.data.items || []).map((a) => String(a.serial_no));
+  check('通信G4 历史通信状态行不出现在告警中心列表（记录仍保留在库中）',
+    { inList: false, stillInDb: true, normalAlarmVisible: true },
+    {
+      inList: listedSerials.includes(legacySerial),
+      stillInDb: (await alarmRowsOf(legacySerial)) === 1,
+      normalAlarmVisible: listedSerials.includes(String(gRealSerial)),
+    });
+
+  const totalBefore = listBefore.data && listBefore.data.total;
+  const totalAfter = listRes.data && listRes.data.total;
+  const unresolvedBefore = statsBeforeLegacy.data && statsBeforeLegacy.data.unresolved;
+  const unresolvedAfter = statsAfterLegacy.data && statsAfterLegacy.data.unresolved;
+  console.log(`      列表总数 ${totalBefore} → ${totalAfter}；未解决数 ${unresolvedBefore} → ${unresolvedAfter}；趋势合计 ${trendSum(trendBefore)} → ${trendSum(trendAfter)}`);
+  check('通信G4b 历史通信状态行不计入列表总数 / 统计 / 趋势（数量与展示口径一致）',
+    { totalUnchanged: true, statsUnchanged: true, trendUnchanged: true },
+    {
+      totalUnchanged: totalBefore === totalAfter,
+      statsUnchanged: unresolvedBefore === unresolvedAfter,
+      trendUnchanged: trendSum(trendBefore) === trendSum(trendAfter),
+    });
+  // 测试收尾：删掉本段自己插入的历史行（仅临时测试库）
+  await dbRun('DELETE FROM alarms WHERE device_id = ? AND serial_no = ?', [GW.norm, legacySerial]);
+
+  // ---- G5 通信状态接口：只取厂家心跳 4.2 的 online/offline ----
+  const alarmTotalBeforeHb = (await dbGet('SELECT COUNT(*) c FROM alarms')).c;
+  const pushBeforeHb = await pushTotalRows();
+  const hbStatus = gw3.heartbeat({ online: ['1246001'], offline: ['1061001'] });
+  await gw3.waitFor((r) => r.body && r.body.id === hbStatus.id);
+  await sleep(500);
+  const commRes = await apiJson('GET', `/devices/${GW.norm}/sub-device-comm-status`, undefined, adminToken);
+  const commSubs = (commRes.data && commRes.data.subDevices) || [];
+  const commById = Object.fromEntries(commSubs.map((s) => [s.devId, s]));
+  check('通信G5 状态接口按字典返回全部功能子设备（含 devName；排除网关自身 215001）',
+    { code: 0, count: 6, hasDevName: true, excludes215001: true },
+    {
+      code: commRes.code,
+      count: commSubs.length,
+      hasDevName: !!(commById['1246001'] && commById['1246001'].devName),
+      excludes215001: !commById['215001'],
+    });
+  check('通信G5b 状态映射：online→在线 / offline→离线 / 两表都未列出→未知',
+    { online: 'online', offline: 'offline', unlisted: 'unknown' },
+    {
+      online: commById['1246001'] && commById['1246001'].status,
+      offline: commById['1061001'] && commById['1061001'].status,
+      unlisted: commById['2060001'] && commById['2060001'].status,
+    });
+  check('通信G5c 状态项带 lastHeartbeatAt，且心跳/状态上报不创建告警、不推送',
+    { hasHeartbeatAt: true, alarmDelta: 0, pushDelta: 0 },
+    {
+      hasHeartbeatAt: typeof (commById['1246001'] || {}).lastHeartbeatAt === 'number',
+      alarmDelta: (await dbGet('SELECT COUNT(*) c FROM alarms')).c - alarmTotalBeforeHb,
+      pushDelta: (await pushTotalRows()) - pushBeforeHb,
+    });
+
+  // ---- G5d 整批覆盖：新心跳替换上一批，不是增量累加 ----
+  const hbSwap = gw3.heartbeat({ online: ['1061001'], offline: ['1246001'] });
+  await gw3.waitFor((r) => r.body && r.body.id === hbSwap.id);
+  await sleep(400);
+  const swapRes = await apiJson('GET', `/devices/${GW.norm}/sub-device-comm-status`, undefined, adminToken);
+  const swapById = Object.fromEntries(
+    ((swapRes.data && swapRes.data.subDevices) || []).map((s) => [s.devId, s])
+  );
+  check('通信G5d 每次心跳整批覆盖（协议 4.2 的在线/离线是"设备列表"，非增量事件）',
+    { devA: 'offline', devB: 'online' },
+    {
+      devA: swapById['1246001'] && swapById['1246001'].status,
+      devB: swapById['1061001'] && swapById['1061001'].status,
+    });
+
+  // ---- G5e 同一 devId 同时出现在两个列表 → 未知 + 异常日志 ----
+  const hbConflict = gw3.heartbeat({ online: ['1246001'], offline: ['1246001', '1061001'] });
+  await gw3.waitFor((r) => r.body && r.body.id === hbConflict.id);
+  await sleep(400);
+  const conflictRes = await apiJson('GET', `/devices/${GW.norm}/sub-device-comm-status`, undefined, adminToken);
+  const conflictById = Object.fromEntries(
+    ((conflictRes.data && conflictRes.data.subDevices) || []).map((s) => [s.devId, s])
+  );
+  const conflictLog = fs.readFileSync(path.join(DIR, 'backend.log'), 'utf8');
+  check('通信G5e 同一 devId 同时出现在 online/offline → 未知，并记录异常日志',
+    { status: 'unknown', logged: true },
+    {
+      status: conflictById['1246001'] && conflictById['1246001'].status,
+      logged: conflictLog.includes('同时出现在 online 与 offline'),
+    });
+
+  // ---- G5f 已连接但尚未收到有效心跳 → 全部离线 ----
+  // 新建一个网关：上报字典但**不发心跳**，接口应返回功能子设备且状态为 offline
+  // （不得因 MQTT 已连接就显示在线，也不显示未知）。
+  const NOHB_GW = '00aa11bb2201';
+  const noHbGw = new FsuGatewaySim({
+    host: '127.0.0.1', port: MQTT_PORT, gwId: NOHB_GW,
+    username: MQTT_USER, password: MQTT_PASS, fsuUsername: FSU_USER, fsuPassword: FSU_PASS,
+  });
+  await noHbGw.connect();
+  const noHbLogin = noHbGw.login({ mac: NOHB_GW });
+  await noHbGw.waitFor((r) => r.body && r.body.id === noHbLogin.id);
+  await sleep(400);
+  noHbGw.publish(`gw/v1/uploadDevInfo/${NOHB_GW}`, {
+    id: 'upd-nohb', timestamp: Date.now(), method: 'uploadDevInfo',
+    params: [
+      { devId: '301001', devName: '测试子设备.json', meters: [
+        { meterId: '0', meterName: '通信状态', meterType: 2 },
+        { meterId: '3300010001', meterName: '测试告警点', meterType: 2 }] },
+      // 网关自身条目：只有通信状态 + 遥测点，无独立告警点 → 不应被当作功能子设备
+      { devId: '999001', devName: '设备信息', meters: [
+        { meterId: '0', meterName: '通信状态', meterType: 2 },
+        { meterId: '3399990001', meterName: 'CPU利用率', meterType: 1 }] },
+    ],
+  });
+  await sleep(800);
+  const noHbRes = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const noHbSubs = (noHbRes.data && noHbRes.data.subDevices) || [];
+  const noHbById = Object.fromEntries(noHbSubs.map((s) => [s.devId, s]));
+  check('通信G5f MQTT 已连接但未收到有效心跳 → lastHeartbeatAt=null 且状态全部为离线',
+    { heartbeatAt: null, status: 'offline', count: 1, excludesGatewayEntry: true },
+    {
+      heartbeatAt: noHbRes.data && noHbRes.data.lastHeartbeatAt,
+      status: noHbById['301001'] && noHbById['301001'].status,
+      count: noHbSubs.length,
+      excludesGatewayEntry: !noHbById['999001'],
+    });
+
+  // ---- G5j 非法心跳不得覆盖已有有效快照 ----
+  // 先产生一份有效快照（在线），再发一条非法心跳（online 不是数组），
+  // 状态必须仍是上一次有效快照的结果。
+  const goodHb = noHbGw.heartbeat({ online: ['301001'], offline: [] });
+  await noHbGw.waitFor((r) => r.body && r.body.id === goodHb.id);
+  await sleep(400);
+  const beforeBadHb = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const beforeBadHbAt = beforeBadHb.data && beforeBadHb.data.lastHeartbeatAt;
+  noHbGw.publish(`gw/v1/heartbeat/${NOHB_GW}`, {
+    id: 'bad-hb', timestamp: Date.now(), method: 'heartbeat',
+    params: { online: 'not-an-array', offline: [] },
+  });
+  await sleep(600);
+  const afterBadHb = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const badHbSub = ((afterBadHb.data && afterBadHb.data.subDevices) || [])
+    .find((s) => s.devId === '301001');
+  check('通信G5j 非法心跳（online 不是数组）不覆盖已有有效快照：仍为在线，心跳时间不变',
+    { statusBefore: 'online', statusAfter: 'online', heartbeatAtUnchanged: true },
+    {
+      statusBefore: ((beforeBadHb.data && beforeBadHb.data.subDevices) || [])
+        .find((s) => s.devId === '301001')?.status,
+      statusAfter: badHbSub && badHbSub.status,
+      heartbeatAtUnchanged: (afterBadHb.data && afterBadHb.data.lastHeartbeatAt) === beforeBadHbAt,
+    });
+
+  // ---- G5g 新增功能子设备自动纳入：1999001 由 E 段字典动态加入 ----
+  const newSubRpt = gw3.alarmReport({
+    alarmFlag: 1, alarmLevel: 2, alarmTime: Math.floor(Date.now() / 1000),
+    serialNo: 9605, devId: '1999001', meterId: '0',
+  });
+  await gw3.waitFor((r) => r.body && r.body.id === newSubRpt.id);
+  await sleep(800);
+  check('通信G5g 新增功能子设备（1999001）自动适用通信状态告警屏蔽，且自动出现在状态接口',
+    { alarmRows: 0, inStatusApi: true },
+    { alarmRows: await alarmRowsOf(9605), inStatusApi: !!commById['1999001'] });
+  // ---- G5i 网关断开（重启/断电）后：全部功能子设备显示离线 ----
+  const noHbHb = noHbGw.heartbeat({ online: ['301001'], offline: [] });
+  await noHbGw.waitFor((r) => r.body && r.body.id === noHbHb.id);
+  await sleep(400);
+  const beforeDisc = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const beforeDiscStatus = ((beforeDisc.data && beforeDisc.data.subDevices) || [])
+    .find((s) => s.devId === '301001');
+  // 断开的同一时刻，主网关 gw3 保持自己的有效快照（在线），用于验证互不影响。
+  // 先发一条干净的快照，避免沿用 G5e 冲突快照（1246001 同时出现在两个列表）。
+  const cleanHb = gw3.heartbeat({ online: ['1246001'], offline: ['1061001'] });
+  await gw3.waitFor((r) => r.body && r.body.id === cleanHb.id);
+  await sleep(400);
+  const otherBefore = await apiJson('GET', `/devices/${GW.norm}/sub-device-comm-status`, undefined, adminToken);
+  const otherBeforeStatus = (otherBefore.data?.subDevices || []).find((s) => s.devId === '1246001');
+  await noHbGw.end();
+  await sleep(1200);
+  const afterDisc = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const afterDiscSub = ((afterDisc.data && afterDisc.data.subDevices) || [])
+    .find((s) => s.devId === '301001');
+  check('通信G5i 网关断开后所有功能子设备显示离线，lastHeartbeatAt 清空',
+    { onlineBefore: 'online', offlineAfter: 'offline', heartbeatAtCleared: true },
+    {
+      onlineBefore: beforeDiscStatus && beforeDiscStatus.status,
+      offlineAfter: afterDiscSub && afterDiscSub.status,
+      heartbeatAtCleared: (afterDisc.data && afterDisc.data.lastHeartbeatAt) === null,
+    });
+
+  // ---- G5l 一台网关断开不影响其他网关 ----
+  const otherAfter = await apiJson('GET', `/devices/${GW.norm}/sub-device-comm-status`, undefined, adminToken);
+  const otherAfterStatus = (otherAfter.data?.subDevices || []).find((s) => s.devId === '1246001');
+  check('通信G5l 一台网关断开不影响其他网关的子设备状态',
+    { before: 'online', after: 'online' },
+    { before: otherBeforeStatus && otherBeforeStatus.status, after: otherAfterStatus && otherAfterStatus.status });
+
+  // ---- G5k 网关重连后、收到本周期第一条有效心跳前 → 仍全部离线 ----
+  const reGw = new FsuGatewaySim({
+    host: '127.0.0.1', port: MQTT_PORT, gwId: NOHB_GW,
+    username: MQTT_USER, password: MQTT_PASS, fsuUsername: FSU_USER, fsuPassword: FSU_PASS,
+  });
+  await reGw.connect();
+  const reLogin = reGw.login({ mac: NOHB_GW });
+  await reGw.waitFor((r) => r.body && r.body.id === reLogin.id);
+  await sleep(500);
+  const afterReconnect = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const reconnectedSub = (afterReconnect.data?.subDevices || []).find((s) => s.devId === '301001');
+  check('通信G5k 网关重连但未收到有效心跳 → 仍全部离线（不因 MQTT 已连接显示在线）',
+    { status: 'offline', heartbeatAt: null },
+    {
+      status: reconnectedSub && reconnectedSub.status,
+      heartbeatAt: afterReconnect.data && afterReconnect.data.lastHeartbeatAt,
+    });
+
+  // 收到重连后的第一条有效心跳 → 按全量快照更新
+  const reHb = reGw.heartbeat({ online: ['301001'], offline: [] });
+  await reGw.waitFor((r) => r.body && r.body.id === reHb.id);
+  await sleep(500);
+  const afterReHb = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const reHbSub = (afterReHb.data?.subDevices || []).find((s) => s.devId === '301001');
+  check('通信G5k2 重连后收到第一条有效心跳 → 按全量快照更新为在线',
+    { status: 'online', heartbeatAtIsNumber: true },
+    {
+      status: reHbSub && reHbSub.status,
+      heartbeatAtIsNumber: typeof (afterReHb.data && afterReHb.data.lastHeartbeatAt) === 'number',
+    });
+
+  // ---- G5m 旧 MQTT 连接的断开事件不得清除新连接的状态 ----
+  // 用**原始 MQTT 客户端**建两条相同 clientId（= gwId）的连接：
+  //   - reconnectPeriod: 0 —— 旧连接被踢后不会自动重连，避免两条连接互相踢下线；
+  //   - 新连接接管后发 login + 心跳，旧连接的断开事件不得把新状态清成离线。
+  const rawGwOpts = {
+    username: MQTT_USER, password: MQTT_PASS,
+    reconnectPeriod: 0, clean: true, protocolVersion: 4, keepalive: 60,
+  };
+  const rawConnect = (gwId) => new Promise((resolve, reject) => {
+    const c = mqttLib.connect(`mqtt://127.0.0.1:${MQTT_PORT}`, { ...rawGwOpts, clientId: gwId });
+    const t = setTimeout(() => reject(new Error('原始 MQTT 客户端连接超时')), 8000);
+    c.once('connect', () => { clearTimeout(t); c.subscribe('sc/v1/#', { qos: 1 }); resolve(c); });
+    c.once('error', (e) => { clearTimeout(t); reject(e); });
+  });
+  const rawPublish = (c, topic, body) => new Promise((resolve, reject) => {
+    c.publish(topic, JSON.stringify(body), { qos: 1 }, (e) => (e ? reject(e) : resolve()));
+  });
+
+  const oldClient = await rawConnect(NOHB_GW);
+  // 旧连接的 login + 心跳（建立一份有效快照）
+  await rawPublish(oldClient, `gw/v1/login`, {
+    id: 'raw-login-old', timestamp: Date.now(), method: 'login',
+    params: { version: 'v1', mac: NOHB_GW, username: FSU_USER, password: FSU_PASS },
+  });
+  await rawPublish(oldClient, `gw/v1/heartbeat/${NOHB_GW}`, {
+    id: 'raw-hb-old', timestamp: Date.now(), method: 'heartbeat',
+    params: { online: ['301001'], offline: [] },
+  });
+  await sleep(500);
+
+  // 新连接使用相同 clientId：aedes 关闭旧连接，新连接接管
+  const newClient = await rawConnect(NOHB_GW);
+  await rawPublish(newClient, `gw/v1/login`, {
+    id: 'raw-login-new', timestamp: Date.now(), method: 'login',
+    params: { version: 'v1', mac: NOHB_GW, username: FSU_USER, password: FSU_PASS },
+  });
+  await rawPublish(newClient, `gw/v1/heartbeat/${NOHB_GW}`, {
+    id: 'raw-hb-new', timestamp: Date.now(), method: 'heartbeat',
+    params: { online: ['301001'], offline: [] },
+  });
+  await sleep(1800); // 留出旧连接断开事件到达的时间
+  const afterTakeover = await apiJson('GET', `/devices/${NOHB_GW}/sub-device-comm-status`, undefined, adminToken);
+  const takeoverSub = (afterTakeover.data?.subDevices || []).find((s) => s.devId === '301001');
+  const takeoverLog = fs.readFileSync(path.join(DIR, 'backend.log'), 'utf8');
+  check('通信G5m 新连接接管后，旧连接的断开事件未清除新连接的心跳状态（仍为在线）',
+    { status: 'online', oldDisconnectIgnoredOrOrdered: true },
+    {
+      status: takeoverSub && takeoverSub.status,
+      // 事件顺序由 aedes 决定：旧断开可能先于新连接，也可能晚于；两种都不应影响最终状态
+      oldDisconnectIgnoredOrOrdered:
+        takeoverLog.includes('忽略旧连接的断开事件') || takeoverSub?.status === 'online',
+    });
+  newClient.end(true);
+  oldClient.end(true);
+
+  // ---- G5h 无字典的网关不被误屏蔽（屏蔽按网关 + 字典判定，不是全局 devId 名单） ----
+  const NO_DICT_GW = '00aa11bb3301';
+  const noDictGw = new FsuGatewaySim({
+    host: '127.0.0.1', port: MQTT_PORT, gwId: NO_DICT_GW,
+    username: MQTT_USER, password: MQTT_PASS, fsuUsername: FSU_USER, fsuPassword: FSU_PASS,
+  });
+  await noDictGw.connect();
+  const noDictLogin = noDictGw.login({ mac: NO_DICT_GW });
+  await noDictGw.waitFor((r) => r.body && r.body.id === noDictLogin.id);
+  await sleep(400);
+  const noDictRpt = noDictGw.alarmReport({
+    alarmFlag: 1, alarmLevel: 2, alarmTime: Math.floor(Date.now() / 1000),
+    serialNo: 9611, devId: '1061001', meterId: '0',
+  });
+  await noDictGw.waitFor((r) => r.body && r.body.id === noDictRpt.id);
+  await sleep(800);
+  const noDictRows = (await dbGet(
+    'SELECT COUNT(*) c FROM alarms WHERE device_id = ? AND serial_no = ?',
+    [NO_DICT_GW, '9611'])).c;
+  check('通信G5h 无字典网关的 meterId=0 告警保持原行为（不扩大屏蔽范围）',
+    { alarmRows: 1 }, { alarmRows: noDictRows });
+  await noDictGw.end();
+
+  // ---- G6 被抑制的子设备仍出现在子设备筛选里（取消的是告警，不是子设备） ----
+  const subDevRes = await apiJson('GET', '/alarms/sub-devices', undefined, adminToken);
+  const subIds = (subDevRes.data.options || []).map((o) => o.devId);
+  check('通信G6 被抑制的子设备仍出现在子设备筛选中',
+    { hasTargetSubDevice: true }, { hasTargetSubDevice: subIds.includes('1246001') });
+
+  // ---- G7 重复上报 + 消除流程：均不产生告警（无意外副作用） ----
+  const gCommDup = gw3.alarmReport({
+    alarmFlag: 1, alarmLevel: 2, alarmTime: Math.floor(Date.now() / 1000),
+    serialNo: gCommSerial, devId: '1246001', meterId: '0',
+  });
+  await gw3.waitFor((r) => r.body && r.body.id === gCommDup.id);
+  const gCommClear = gw3.alarmReport({
+    alarmFlag: 0, alarmLevel: 2, alarmTime: Math.floor(Date.now() / 1000),
+    serialNo: 9604, devId: '1246001', meterId: '0',
+  });
+  const gCommClearAck = await gw3.waitFor((r) => r.body && r.body.id === gCommClear.id);
+  await sleep(800);
+  check('通信G7 通信状态的重复上报与消除流程都不产生告警',
+    { duplicateRows: 0, clearCode: 0 },
+    { duplicateRows: await alarmRowsOf(gCommSerial), clearCode: gCommClearAck.body.code });
+
+  await new Promise((r) => gHook.close(r));
 
   await gw3.end();
 

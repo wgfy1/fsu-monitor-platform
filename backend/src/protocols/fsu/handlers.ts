@@ -31,7 +31,9 @@ import {
   findMeterName,
 } from './mapping';
 // 字典读取独立成模块（避免 handlers → alarmService → notifyService → handlers 循环依赖）
-import { loadMeterDictionary } from './dictionary';
+import {
+  loadMeterDictionary, parseMeterDictionary, isSubDeviceCommStatusEvent,
+} from './dictionary';
 import { FsuAck } from './types';
 
 /** 处理上下文（由路由层提供） */
@@ -394,6 +396,30 @@ export async function handleAlarmReport(body: any, ctx: HandlerContext): Promise
   // 平台不内建任何 meterId→名称 表；字典里有什么就显示什么，
   // 厂家改点名称 / 加子设备，平台无需改代码。
   const dictJson = await loadMeterDictionary(gwId);
+
+  // === 通信状态事件：不作为普通告警创建 ===
+  //
+  // 判据完全来自厂家字典（meterName="通信状态"）× 该网关的功能子设备：
+  //   - 不写死 devId / meterId；
+  //   - 不影响网关自身条目（如 215001）的通信状态，也不影响子设备的其它真实告警。
+  //
+  // 协议 4.4 规定网关先上报完设备信息（uploadDevInfo）、再逐条上报告警，
+  // 因此这里读到字典是必然的；万一字典缺失则无法识别，退回原行为（不误杀）。
+  //
+  // 只拦 alarmFlag=1（产生）：不落库、不触发钉钉/短信推送。
+  // alarmFlag=0（消除）仍走下面的既有逻辑，仅用于清理可能存在的历史记录，
+  // 不会新建任何告警、也不会发推送。
+  if (p.alarmFlag === 1 && isSubDeviceCommStatusEvent(
+    parseMeterDictionary(dictJson), p.devId, p.meterId
+  )) {
+    console.log(
+      `[FSU] alarmReport 通信状态事件不作为告警创建: gwId=${gwId}, ` +
+      `devId=${p.devId}, meterId=${p.meterId}, serialNo=${p.serialNo} ` +
+      '（通信状态改由状态图标展示，不落 alarms、不推送）'
+    );
+    return buildAck('alarmReport', id, CODES.SUCCESS);
+  }
+
   const cnMeterName = findMeterName(dictJson, p.devId, p.meterId);
   // 字典缺失 / 查不到 / 名称为空时**不伪造名称**，回退到通用文案，
   // 并把 devId + meterId 一并写进文本，保证可排查。

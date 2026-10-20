@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { ApiResponse, Device, Alarm, AlarmStats, PlatformConfig, User, UserRole, LoginResult, AlarmNotifyConfig, AlarmPushLog, NotifyChannel, Site, SiteStats, RegionNode, Tenant, TenantDeletePreview, RemoteGetDataResult, RemoteGetAlarmResult, RemoteSetDataResult, RemoteSetDataItem, RemoteMeterOptionsResult, NtpConfig, DeviceImportPreview, DeviceImportConfirm, SubDeviceOption } from '../types';
+import { ApiResponse, Device, Alarm, AlarmStats, PlatformConfig, User, UserRole, LoginResult, AlarmNotifyConfig, AlarmPushLog, NotifyChannel, Site, SiteStats, RegionNode, Tenant, TenantDeletePreview, RemoteGetDataResult, RemoteGetAlarmResult, RemoteSetDataResult, RemoteSetDataItem, RemoteMeterOptionsResult, NtpConfig, DeviceImportPreview, DeviceImportConfirm, SubDeviceOption, SubDeviceCommStatusResult } from '../types';
 import { getToken, clearAuth } from '../auth';
 
 // 创建axios实例
@@ -112,6 +112,14 @@ export const deviceApi = {
    */
   detail: (id: string): Promise<ApiResponse<Device>> => {
     return apiClient.get(`/devices/${id}`);
+  },
+
+  /**
+   * 子设备通信状态（只用厂家心跳 4.2 上报的 online/offline 列表）
+   * 未列出的 devId 由调用方显示为「未知」。
+   */
+  subDeviceCommStatus: (id: string): Promise<ApiResponse<SubDeviceCommStatusResult>> => {
+    return apiClient.get(`/devices/${id}/sub-device-comm-status`);
   },
 
   /**
