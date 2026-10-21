@@ -27,13 +27,19 @@ RUN npm run build
 FROM node:18-alpine
 WORKDIR /app
 
-# 后端依赖：优先使用 sqlite3 官方预编译包
+# 后端依赖：使用项目内置的 sqlite3 官方预编译包
 COPY backend/package*.json ./
-RUN npm ci --legacy-peer-deps
+COPY backend/prebuilds/ ./prebuilds/
+
+RUN test -s /app/prebuilds/sqlite3-v5.1.7-napi-v6-linuxmusl-x64.tar.gz \
+    && npm_config_sqlite3_local_prebuilds=/app/prebuilds npm ci --legacy-peer-deps \
+    && test -s /app/node_modules/sqlite3/build/Release/node_sqlite3.node \
+    && node -e "require('sqlite3'); console.log('sqlite3 prebuilt binary OK')" \
+    && rm -rf /app/prebuilds
+
 # 拷贝源码并构建
 COPY backend/ ./
-RUN npm run build && npm prune --production
-
+RUN npm run build && npm prune --production && rm -rf /app/prebuilds
 # 前端构建产物（express.static 托管，一个端口同时服务页面与 API）
 ENV STATIC_DIR=/app/frontend-build
 COPY --from=frontend-build /fe/build /app/frontend-build
