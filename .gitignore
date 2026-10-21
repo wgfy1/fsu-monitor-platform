@@ -65,3 +65,10 @@ build/
 # Legacy and local-only MQTT configuration
 /mosquitto.conf
 /backend/test-mqtt.js
+
+# Local deployment script work files
+/__pycache__/
+/deploy.sh.candidate
+/deploy.sh.original
+/modify_deploy.py
+/modify_deploy.py.pre-rollback
